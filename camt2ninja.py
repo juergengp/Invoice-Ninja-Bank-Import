@@ -577,6 +577,8 @@ def rollback(run, commit):
         ours = (c.get("payment_id") and x.get("payment_id") == c["payment_id"]) or \
                (c.get("expense_id") and c["expense_id"] in (x.get("expense_id") or ""))
         (ok if st in (1, 2) or ours else linked).append((c, x, st))
+    exist = [c for c, _, _ in ok if c.get("existing_tx")]
+    ok = [o for o in ok if not o[0].get("existing_tx")]
     pays = [c for c, _, _ in ok if c.get("payment_id") and not c.get("payment_linked")]
     pay_link = [c for c, _, _ in ok if c.get("payment_linked")]
     exp_new = [c for c, _, _ in ok if c.get("expense_created")]
@@ -597,6 +599,16 @@ def rollback(run, commit):
         for k in range(0, len(ids), 100):
             api.req("POST", f"{path}/bulk", {"action": action, "ids": ids[k:k + 100]})
 
+    if exist:  # transactions from an earlier run: unlink + restore text, keep the transaction
+        bulk("bank_transactions", "unlink", [c["id"] for c in exist if c.get("expense_id")])
+        bulk("expenses", "delete", [e for c in exist if c.get("expense_created")
+                                    for e in (c.get("expense_id") or "").split(",") if e])
+        for c in exist:
+            x = api.req("GET", f"bank_transactions/{c['id']}")["data"]
+            api.req("PUT", f"bank_transactions/{c['id']}", {
+                "bank_integration_id": x["bank_integration_id"], "date": x["date"], "amount": x["amount"],
+                "base_type": x["base_type"], **c["old"]})
+        print(f"  existing transactions: unlinked {len(exist)}, their created expenses deleted, text restored")
     bulk("payments", "delete", [c["payment_id"] for c in pays])
     for c in pays:  # payment replaced by this run: re-create it (deleted payments cannot be restored)
         rp = c.get("replaced_payment")
@@ -628,6 +640,57 @@ def rollback(run, commit):
           f"unlinked {len(exp_link)} expenses; they can be imported again")
 
 
+def run_existing(api, items, expm, commit, label):
+    """already imported bookings that are still unmatched in Invoice Ninja: add expenses afterwards
+    (and refresh text/counterparty, e.g. PayPal merchant). Rollback unlinks instead of deleting."""
+    ids = {}
+    for f in sorted(RUNS.glob("*.json")) if RUNS.exists() else []:
+        for e in json.loads(f.read_text()).get("created", []):
+            ids[e["ref"]] = e["id"]
+    todo = []
+    for t in items:
+        if t["ref"] not in ids:
+            continue
+        x = api.req("GET", f"bank_transactions/{ids[t['ref']]}")["data"]
+        if x.get("is_deleted") or int(x.get("status_id") or 1) != 1:
+            continue
+        todo.append((t, x))
+    expm.plan_links([t for t, _ in todo])
+    plans = [(t, x, *expm.plan(t)) for t, x in todo]
+    cnt = collections.Counter(k for *_, k, _ in plans)
+    print(f"\nexisting unmatched bookings: {len(todo)} -> create {cnt['create']} expenses, link {cnt['link']}, "
+          f"no expense {cnt['skip'] + cnt['none']}, NOT IN MAP {cnt['unmapped']}")
+    for t, x, k, o in plans:
+        what = {"create": lambda: f"{o['vendor']} [{o['category']}] {VAT.get(o.get('vat'), (0, '-'))[1]}",
+                "link": lambda: f"existing expense {o.get('number')}",
+                "skip": lambda: "no expense", "none": lambda: "incoming - unchanged",
+                "unmapped": lambda: "NOT IN MAP - unchanged"}[k]()
+        print(f"  {t['date']} -{t['amount']:>8} {party_of(t)[:34]:34} -> {what}")
+    if not commit:
+        print("\ndry run - re-run with --commit")
+        return
+    RUNS.mkdir(exist_ok=True)
+    run_id = __import__("datetime").datetime.now().strftime("%Y%m%d-%H%M%S")
+    log = {"run": run_id, "label": label, "created": [], "created_vendors": [], "created_categories": []}
+    run_file = RUNS / f"{run_id}.json"
+    for t, x, k, o in plans:
+        entry = {"id": x["id"], "ref": t["ref"], "existing_tx": True,
+                 "old": {"description": x.get("description"), "participant_name": x.get("participant_name")}}
+        changed = (t["description"], ninja_participant(t)) != (x.get("description"), x.get("participant_name"))
+        if changed:
+            api.req("PUT", f"bank_transactions/{x['id']}", {
+                "bank_integration_id": x["bank_integration_id"], "date": x["date"], "amount": x["amount"],
+                "base_type": x["base_type"], "description": t["description"], "participant_name": ninja_participant(t)})
+        res = expm.apply(x["id"], t) if k in ("create", "link") else None
+        if res:
+            entry.update(res)
+        if changed or res:
+            log["created"].append(entry)
+            log["created_vendors"], log["created_categories"] = expm.created_vendors, expm.created_cats
+            run_file.write_text(json.dumps(log, indent=1))
+    print(f"updated {len(log['created'])} existing transactions; run id {run_id} - undo: ./camt2ninja.py --rollback {run_id} --commit")
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("paths", nargs="*")
@@ -641,6 +704,8 @@ def main():
     ap.add_argument("--expenses", metavar="MAP",
                     help="expense_map.json from expenses.html: turn outgoing bookings into expenses")
     ap.add_argument("--debits-only", action="store_true")
+    ap.add_argument("--existing", action="store_true",
+                    help="only already imported, still unmatched bookings: add expenses / refresh text afterwards")
     ap.add_argument("--overrides", metavar="FILE", help="special cases per booking (default: overrides.json if present)")
     ap.add_argument("--runs", action="store_true", help="list logged import runs")
     ap.add_argument("--rollback", metavar="RUN", help="delete everything a run created ('last' or run id); add --commit")
@@ -676,6 +741,12 @@ def main():
     if a.since:
         txs = [t for t in txs if t["date"] >= a.since]
     state = set(json.loads(STATE.read_text())) if STATE.exists() else set()
+    if a.existing:
+        if not a.expenses:
+            ap.error("--existing needs --expenses MAP")
+        api = api_from_env()
+        return run_existing(api, [t for t in txs if t["ref"] in state],
+                            ExpenseMapper(api, json.loads(Path(a.expenses).read_text())), a.commit, "existing")
     new = [t for t in txs if t["ref"] not in state]
     if a.limit:
         new = new[:a.limit]

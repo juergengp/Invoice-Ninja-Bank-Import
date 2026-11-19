@@ -66,6 +66,7 @@ Your previous selection and mapping are pre-filled next month, so only new booki
 | `--credits-only` / `--debits-only` | only incoming / outgoing bookings |
 | `--since YYYY-MM-DD` | ignore older bookings |
 | `--overrides FILE` | special cases (default `overrides.json`) |
+| `--existing` | with `--expenses`: add expenses to already imported, still unmatched bookings (e.g. after adding a PayPal export); rollback unlinks them again |
 
 ## VAT codes in the mapping
 

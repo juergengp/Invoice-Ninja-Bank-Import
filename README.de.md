@@ -66,6 +66,7 @@ Im nächsten Monat sind Auswahl und Zuordnung vorausgefüllt. Sie entscheiden nu
 | `--credits-only` / `--debits-only` | nur eingehende bzw. nur ausgehende Buchungen |
 | `--since JJJJ-MM-TT` | ältere Buchungen ignorieren |
 | `--overrides DATEI` | Sonderfälle (Standard `overrides.json`) |
+| `--existing` | mit `--expenses`: bereits importierte, noch nicht zugeordnete Buchungen nachträglich zu Ausgaben machen (z. B. nach einem PayPal-Export); ein Rollback hebt die Verknüpfung wieder auf |
 
 ## USt-Codes in der Zuordnung
 
