@@ -364,6 +364,29 @@ def invoice_refs(t):
     return list(dict.fromkeys(refs))
 
 
+# invoices from a previous program, imported with a prefix (see ebinterface2ninja.py): payments before
+# IN_LEGACY_UNTIL reference them by their old number without year ("RN 19", "Rechnung-Nr. 15", "R45")
+LEGACY_RE = re.compile(r"(?:\bRN|\bRE|\bRe|\bRg|\bR|\bInvoice|Rechnung\w*|#)[\s.:#-]*(?:Nr\.?[\s.:-]*)?"
+                       r"0*(\d{1,3})(?!\d)((?:\s*(?:\+|,|&|und)\s*0*\d{1,3}(?!\d))*)", re.I)
+
+
+def legacy_candidates(t):
+    """-> list of possible invoice-number lists, e.g. [["PS-2024-020", "PS-2024-021"], ["PS-2023-020", ...]]"""
+    prefix, until = os.environ.get("IN_LEGACY_PREFIX", "PS-"), os.environ.get("IN_LEGACY_UNTIL", "")
+    if not until or t["date"] >= until:
+        return []
+    d = t["description"]
+    nums = []
+    for m in LEGACY_RE.finditer(d):  # "Rechnung-Nr. 22+24" -> 22, 24
+        nums += [int(m.group(1))] + [int(n) for n in re.findall(r"\d+", m.group(2) or "")]
+    if re.fullmatch(r"\s*\d{1,3}(\s*,\s*\d{1,3})*\s*", d):  # "20, 21" or just "12" (amount must match)
+        nums = [int(n) for n in re.findall(r"\d+", d)]
+    if not nums:
+        return []
+    y = int(t["date"][:4])
+    return [[f"{prefix}{yy}-{n:03d}" for n in dict.fromkeys(nums)] for yy in (y, y - 1)]
+
+
 class Matcher:
     """Exact matching only: every invoice number in the reference must exist, be open
     (sent/partial) and the open balances must add up to the booked amount to the cent."""
@@ -380,8 +403,18 @@ class Matcher:
     def find(self, t):
         if t["base_type"] != "CREDIT":
             return None, "outgoing"
-        if override(t):
-            return None, f"override: {override(t)['action']}"
+        o = override(t)
+        if o and o["action"] == "pay_invoices":  # pay these invoices with the bank amount, partial allowed
+            invs = [self.open.get(norm_invoice_no(n)) for n in o["invoices"]]
+            missing = [n for n, i in zip(o["invoices"], invs) if i is None]
+            return (None, f"override: no open invoice {', '.join(missing)}") if missing else (invs, "ok")
+        if o:
+            return None, f"override: {o['action']}"
+        for cand in legacy_candidates(t):
+            invs = [self.open.get(n) for n in cand]
+            if None not in invs and not any(i["id"] in self.used for i in invs) and \
+                    abs(sum(float(i["balance"]) for i in invs) - float(t["amount"])) <= 0.005:
+                return invs, "ok"
         refs = invoice_refs(t)
         if not refs:
             return None, "no invoice number in reference"
@@ -440,6 +473,7 @@ RUNS = HERE / "runs"
 #   {"action": "passthrough", "note": "..."}               no invoice / no expense, note added to the text
 #   {"action": "link_payment", "payment": "2026/000123"}   link to this existing payment (amount may differ)
 #   {"action": "expense", "vendor": "...", "category": "...", "vat": "rc", "note": "..."}
+#   {"action": "pay_invoices", "invoices": ["2024/000123"]}   pay these open invoices, partial payment allowed
 #   {"action": "replace_payment", "payment": "2026/000123", "invoice": "2026/000456"}
 #       existing payment has the wrong amount: delete it, pay the invoice with the bank amount instead
 #       (rollback re-creates the old payment; Invoice Ninja cannot restore deleted payments)

@@ -58,6 +58,16 @@ Im nächsten Monat sind Auswahl und Zuordnung vorausgefüllt. Sie entscheiden nu
   - `{"action": "replace_payment", "payment": "...", "invoice": "..."}`: eine Zahlung mit falschem Betrag durch den Bankbetrag ersetzen.
   - `{"action": "expense", "vendor": "...", "category": "...", "vat": "rc"}`: diese eine Buchung als Ausgabe.
 
+## Rechnungen aus einem früheren Programm
+
+`./ebinterface2ninja.py <ordner> [--prefix PS-]` importiert Ausgangsrechnungen aus **ebInterface-XML** (z. B. ProSaldo.net-Export):
+- **Was angelegt wird:** Kunden, zugeordnet über die UID (fehlende werden angelegt), alle Positionen mit Rabatt und USt, das PDF als Anhang. Die Rechnungen werden als versendet markiert, ohne E-Mail.
+- **Nummern:** `PS-2024-019`, damit sie nicht mit der Invoice-Ninja-Nummerierung kollidieren.
+- **Gutschriften** stornieren die passende Rechnung: gleicher Kunde, gleicher Betrag, bevorzugt vom selben Tag.
+- **Rückgängig:** `--rollback last --commit`.
+
+Setzen Sie `IN_LEGACY_PREFIX=PS-` und `IN_LEGACY_UNTIL=2024-08-01` in der `.env`. Zahlungen vor diesem Datum, die auf die alten Nummern verweisen („RN 19“, „Rechnung-Nr. 22+24“, „Invoice 40“, „#38“), ordnet `--match` dann zu, wenn der Betrag passt.
+
 ## Weitere Optionen
 
 | Option | Wirkung |

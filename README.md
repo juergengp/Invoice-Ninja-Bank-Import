@@ -58,6 +58,16 @@ Your previous selection and mapping are pre-filled next month, so only new booki
   - `{"action": "replace_payment", "payment": "...", "invoice": "..."}`: replace a payment that has the wrong amount by the bank amount.
   - `{"action": "expense", "vendor": "...", "category": "...", "vat": "rc"}`: this one booking as an expense.
 
+## Invoices from a previous program
+
+`./ebinterface2ninja.py <folder> [--prefix PS-]` imports outgoing invoices from **ebInterface XML** (e.g. ProSaldo.net export):
+- **What it creates:** clients matched by VAT number (or created if missing), all line items with discount and VAT, and the PDF attached. Invoices are marked sent without sending an email.
+- **Numbers:** `PS-2024-019`, so they cannot collide with Invoice Ninja's own numbering.
+- **Credit memos** cancel the matching invoice: the one of the same client with the same amount, preferring the same day.
+- **Undo:** `--rollback last --commit`.
+
+Set `IN_LEGACY_PREFIX=PS-` and `IN_LEGACY_UNTIL=2024-08-01` in `.env`. Payments before that date that reference the old numbers ("RN 19", "Rechnung-Nr. 22+24", "Invoice 40", "#38") are then matched by `--match`, if the amount fits.
+
 ## Other options
 
 | Option | Effect |
