@@ -248,8 +248,8 @@ def collect(paths, state=None):
     for ref in [*state, *(t["ref"] for t in out if "|j" not in t["ref"])]:
         known[base_ref(ref)].add(ref)
     slots = {b: len(refs) for b, refs in known.items()}
-    for t in out:  # rows that are themselves known use up their own slot
-        if t["ref"] in known.get(base_ref(t["ref"]), ()):
+    for t in out:  # JSON rows that are themselves known (imported from JSON before) use up their own slot
+        if "|j" in t["ref"] and t["ref"] in known.get(base_ref(t["ref"]), ()):
             slots[base_ref(t["ref"])] -= 1
     keep = []
     for t in out:

@@ -33,11 +33,18 @@ def main():
     args = sys.argv[1:]
     paypal_only = "--paypal" in args  # page with only the PayPal bookings, decided per merchant
     args = [a for a in args if a != "--paypal"]
+    grep = None  # --grep TEXT: page with only the bookings whose counterparty/text contains TEXT
+    if "--grep" in args:
+        k = args.index("--grep")
+        grep = args[k + 1].upper()
+        del args[k:k + 2]
     paths = args or [str(p) for p in HERE.iterdir() if p.name.endswith("camt") or p.suffix in (".xml", ".json")
                                    and p.name[:2].isalpha() and p.name[2:4].isdigit()]
     txs = c.collect(paths)
     if paypal_only:
         txs = [t for t in txs if c.PAYPAL_RE.match(t["description"])]
+    if grep:
+        txs = [t for t in txs if grep in (c.party_of(t) + " " + t["description"]).upper()]
     prev = HERE / "ninja_selection.json"
     prev = json.loads(prev.read_text()) if prev.exists() else {}
     prev_refs = prev.get("decisions", {})
@@ -62,7 +69,8 @@ def main():
     page = TEMPLATE.replace("__PREV__", json.dumps(prev, ensure_ascii=False).replace("</", "<\\/")) \
                    .replace("__DATA__", json.dumps(rows, ensure_ascii=False).replace("</", "<\\/")) \
                    .replace("__PERIOD__", html.escape(period))
-    out = HERE / ("review_paypal.html" if paypal_only else "review.html")
+    out = HERE / ("review_paypal.html" if paypal_only else
+                  f"review_{re.sub(r'[^a-z0-9]+', '_', grep.lower()).strip('_')}.html" if grep else "review.html")
     out.write_text(page, encoding="utf-8")
     print(f"{len(rows)} bookings ({period}) -> {out}")
     print(f"pre-ticked as business: {sum(r['biz'] for r in rows)}")
