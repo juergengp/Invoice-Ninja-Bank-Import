@@ -1,0 +1,15 @@
+# secrets and local config
+.env
+*.pem
+# bank data and personal decisions - never commit
+*camt/
+*.xml
+imported_refs.json
+runs/
+review.html
+expenses.html
+ninja_selection*.json
+expense_map*.json
+# misc
+.DS_Store
+__pycache__/
