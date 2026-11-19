@@ -76,3 +76,7 @@ Bank statements, selections, mappings, run logs and the generated HTML pages sta
 
 - **Incomplete certificate chain:** if your server sends only the leaf certificate (`CERTIFICATE_VERIFY_FAILED`), set `IN_CA_FILE` to the intermediate certificate PEM. The proper fix is to configure the full chain on the server.
 - **No auto-matching:** Invoice Ninja does not auto-match transactions created through the API. Use `--match` instead.
+
+## License
+
+[MIT](LICENSE)
