@@ -416,7 +416,8 @@ class Matcher:
         o = override(t)
         if o:
             if o["action"] == "replace_payment":
-                return None, f"replace payment {o['payment']} by {t['amount']} on invoice {o['invoice']}"
+                return None, (f"replace payment(s) {', '.join(o.get('payments') or [o['payment']])} by {t['amount']}"
+                              f" on invoice(s) {', '.join(o.get('invoices') or [o['invoice']])}")
             if o["action"] != "link_payment":
                 return None, f"{o['action']}: {o.get('note', '')}"
             ps = self.free_pay.get(("number", o["payment"]))
@@ -611,8 +612,7 @@ def rollback(run, commit):
         print(f"  existing transactions: unlinked {len(exist)}, their created expenses deleted, text restored")
     bulk("payments", "delete", [c["payment_id"] for c in pays])
     for c in pays:  # payment replaced by this run: re-create it (deleted payments cannot be restored)
-        rp = c.get("replaced_payment")
-        if rp:
+        for rp in c.get("replaced_payments") or ([c["replaced_payment"]] if c.get("replaced_payment") else []):
             body = {k: rp[k] for k in ("client_id", "amount", "date", "type_id", "transaction_reference") if rp.get(k)}
             body.update(invoices=rp["invoices"],
                         private_notes=" · ".join(p for p in [rp.get("private_notes"), f"ersetzt {rp['number']} (Rollback)"] if p))
@@ -872,22 +872,27 @@ def main():
                 ok += 1
                 o = override(t)
                 if matcher and o and o["action"] == "replace_payment":
-                    old = next(p for p in api.all("payments?include=paymentables")
-                               if p["number"] == o["payment"] and not p.get("is_deleted"))
-                    inv = api.req("GET", f"invoices?number={o['invoice']}")["data"][0]
-                    entry["replaced_payment"] = {k: old.get(k) for k in (
-                        "number", "client_id", "amount", "date", "type_id", "transaction_reference", "private_notes")}
-                    entry["replaced_payment"]["invoices"] = [{"invoice_id": x["invoice_id"], "amount": x["amount"]}
-                                                             for x in old.get("paymentables") or []]
+                    pnums = o.get("payments") or [o["payment"]]
+                    inums = o.get("invoices") or [o["invoice"]]
+                    allp = api.all("payments?include=paymentables")
+                    olds = [next(p for p in allp if p["number"] == n and not p.get("is_deleted")) for n in pnums]
+                    invs = [api.req("GET", f"invoices?number={n}")["data"][0] for n in inums]
+                    entry["replaced_payments"] = []
+                    for old in olds:
+                        rp = {k: old.get(k) for k in (
+                            "number", "client_id", "amount", "date", "type_id", "transaction_reference", "private_notes")}
+                        rp["invoices"] = [{"invoice_id": x["invoice_id"], "amount": x["amount"]}
+                                          for x in old.get("paymentables") or []]
+                        entry["replaced_payments"].append(rp)
                     save_log()
-                    api.req("POST", "payments/bulk", {"action": "delete", "ids": [old["id"]]})
+                    api.req("POST", "payments/bulk", {"action": "delete", "ids": [p["id"] for p in olds]})
                     api.req("POST", "bank_transactions/match", {"transactions": [
-                        {"id": entry["id"], "invoice_ids": inv["id"]}]})
+                        {"id": entry["id"], "invoice_ids": ",".join(i["id"] for i in invs)}]})
                     x = api.req("GET", f"bank_transactions/{entry['id']}")["data"]
-                    entry.update(payment_id=x.get("payment_id"), invoice_numbers=[inv["number"]])
+                    entry.update(payment_id=x.get("payment_id"), invoice_numbers=[i["number"] for i in invs])
                     save_log()
                     matched += 1
-                    print(f"  replaced payment {o['payment']} -> {t['amount']} on {inv['number']}")
+                    print(f"  replaced payment(s) {', '.join(pnums)} -> {t['amount']} on {', '.join(inums)}")
                 elif matcher:
                     invs, _ = matcher.find(t)
                     if invs:

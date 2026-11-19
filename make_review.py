@@ -59,7 +59,7 @@ def main():
             biz, why = prev_refs[t["ref"]], "saved"
         elif p in prev_party:
             biz, why = prev_party[p], "counterparty rule"
-        elif t["base_type"] == "CREDIT" and INVOICE_RE.search(t["description"]):
+        elif t["base_type"] == "CREDIT" and (INVOICE_RE.search(t["description"]) or c.invoice_refs(t)):
             biz, why = True, "invoice no. in reference"
         else:
             biz, why = False, ""

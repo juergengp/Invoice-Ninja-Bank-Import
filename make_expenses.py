@@ -40,7 +40,7 @@ def suggest(party):
     return {"vendor": party.title() if party.isupper() else party, "category": "Sonstiges", "action": "expense", "why": "default"}
 
 
-CAT_VAT = {"Versicherungen": "0", "Bankspesen": "0", "SVA": "0", "Wertpapiere": "0",
+CAT_VAT = {"Versicherungen": "0", "Bankspesen": "0", "SVA": "0", "Wertpapiere": "0", "Gebühren": "0",
            "KFZ": "nodeduct", "Tanken": "nodeduct"}
 VENDOR_VAT = {}  # known exceptions to the country rule
 
