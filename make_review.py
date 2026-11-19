@@ -68,7 +68,8 @@ def main():
     period = f"{rows[0]['date']} – {rows[-1]['date']}" if rows else ""
     page = TEMPLATE.replace("__PREV__", json.dumps(prev, ensure_ascii=False).replace("</", "<\\/")) \
                    .replace("__DATA__", json.dumps(rows, ensure_ascii=False).replace("</", "<\\/")) \
-                   .replace("__PERIOD__", html.escape(period))
+                   .replace("__PERIOD__", html.escape(period)) \
+                   .replace("__YEARS__", html.escape("–".join(dict.fromkeys([rows[0]["date"][:4], rows[-1]["date"][:4]])) if rows else ""))
     out = HERE / ("review_paypal.html" if paypal_only else
                   f"review_{re.sub(r'[^a-z0-9]+', '_', grep.lower()).strip('_')}.html" if grep else "review.html")
     out.write_text(page, encoding="utf-8")
@@ -78,7 +79,7 @@ def main():
 
 TEMPLATE = r"""<!doctype html>
 <html lang="de"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Bank Import Review</title>
+<title>Bank Review __YEARS__</title>
 <style>
 :root{--bg:#f6f5f2;--card:#fff;--ink:#1d1d1b;--mute:#6b6a66;--line:#e3e1dc;--acc:#2f6b4f;--accbg:#e4f0e9;--neg:#9a3b2f;--pos:#2f6b4f;--hi:#fff7d6}
 @media (prefers-color-scheme:dark){:root{--bg:#171716;--card:#211f1e;--ink:#ecebe7;--mute:#9a9893;--line:#353330;--acc:#7cc3a0;--accbg:#22342b;--neg:#e08a7c;--pos:#7cc3a0;--hi:#3a3420}}
@@ -110,7 +111,7 @@ input[type=checkbox]{width:16px;height:16px;accent-color:var(--acc);cursor:point
 @media(max-width:600px){.r{grid-template-columns:22px 1fr 80px}.r .desc{grid-column:2/4}}
 </style></head><body>
 <header>
-  <h1>Bank import review — Erste Bank</h1>
+  <h1>Bank import review __YEARS__ — Erste Bank</h1>
   <div class="sub">__PERIOD__ · Tick = business, gets imported into Invoice Ninja. Unticked = private, skipped. Nothing is uploaded from this page.</div>
   <div class="bar">
     <input type="search" id="q" placeholder="Search counterparty or text…">

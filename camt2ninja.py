@@ -359,6 +359,8 @@ def norm_invoice_no(n):
 
 def invoice_refs(t):
     refs = [f"{y}/{int(n)}" for y, n in INV_RE.findall(t["description"])]
+    if not refs:  # year last: "19/2024"
+        refs = [f"{y}/{int(n)}" for n, y in re.findall(r"(?<![\d/])0*(\d{1,6})\s*/\s*(20\d\d)(?!\d)", t["description"])]
     if not refs:
         refs = [f"{t['date'][:4]}/{int(n)}" for n in RN_RE.findall(t["description"])]
     return list(dict.fromkeys(refs))

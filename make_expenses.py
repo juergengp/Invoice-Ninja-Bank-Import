@@ -32,6 +32,7 @@ SUGGEST = [
 
 
 def suggest(party):
+    party = re.sub(r"\s*\(PayPal\)$", "", party)  # PayPal merchant: match the merchant, not "PayPal"
     up = party.upper()
     for key, vendor, cat, action in SUGGEST:
         # match at word start ("ENI" must not hit "XENIA", but "ACME" must hit "ACMELEASING")
