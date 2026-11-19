@@ -95,7 +95,8 @@ def main():
     vendors = sorted(set(vendors) | {r["vendor"] for r in rows})
     js = lambda o: json.dumps(o, ensure_ascii=False).replace("</", "<\\/")
 
-    page = (TEMPLATE.replace("__DATA__", json.dumps(rows, ensure_ascii=False).replace("</", "<\\/"))
+    page = (TEMPLATE.replace("__PREV__", json.dumps(prev, ensure_ascii=False).replace("</", "<\\/"))
+                    .replace("__DATA__", json.dumps(rows, ensure_ascii=False).replace("</", "<\\/"))
             .replace("__VENDORS__", json.dumps(vendors, ensure_ascii=False).replace("</", "<\\/"))
             .replace("__CATS__", json.dumps(cats, ensure_ascii=False).replace("</", "<\\/"))
             .replace("__NINJA_V__", js(ninja_v)).replace("__NINJA_C__", js(ninja_c))
@@ -138,6 +139,7 @@ label.l{display:block;font-size:11px;color:var(--mute);margin-bottom:2px}
 <div class="toast" id="toast"></div>
 <script>
 const DATA=__DATA__, VEND=__VENDORS__, CATS=__CATS__, VAT=__VAT__;
+const PREV=__PREV__;  // earlier mapping entries (other periods) are kept when saving
 const KEY='ninja-expenses-v2:'+DATA.length;
 try{const s=JSON.parse(localStorage.getItem(KEY)||'null');if(s)DATA.forEach(r=>{if(s[r.party])Object.assign(r,s[r.party])})}catch(e){}
 const persist=()=>{try{localStorage.setItem(KEY,JSON.stringify(Object.fromEntries(DATA.map(r=>[r.party,{vendor:r.vendor,category:r.category,vat:r.vat,action:r.action}]))))}catch(e){}};
@@ -182,7 +184,7 @@ document.getElementById('list').addEventListener('input',e=>{
 });
 document.getElementById('list').addEventListener('change',()=>fill());
 function save(){
- const out=Object.fromEntries(DATA.map(r=>[r.party,{vendor:r.vendor.trim(),category:r.category.trim(),vat:r.vat,action:r.action}]));
+ const out={...PREV,...Object.fromEntries(DATA.map(r=>[r.party,{vendor:r.vendor.trim(),category:r.category.trim(),vat:r.vat,action:r.action}]))};
  const a=document.createElement('a');a.href=URL.createObjectURL(new Blob([JSON.stringify(out,null,1)],{type:'application/json'}));
  a.download='expense_map.json';a.click();
  const t=document.getElementById('toast');t.textContent='Saved expense_map.json to Downloads — move it into the Ninja folder';t.style.display='block';setTimeout(()=>t.style.display='none',4000);

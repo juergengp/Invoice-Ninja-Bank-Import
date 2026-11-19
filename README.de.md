@@ -10,7 +10,7 @@ Importiert Banktransaktionen aus CAMT.053-Kontoauszügen in [Invoice Ninja](http
 - **Umsatzsteuer:** Die Vorgaben folgen den österreichischen Regeln (20 / 13 / 10 %, steuerfrei, Reverse Charge, ausländische USt, kein Vorsteuerabzug beim PKW). Der Vorschlag richtet sich nach dem Land des Zahlungsempfängers.
 - **Sichere Testimporte:** Jeder Lauf wird protokolliert und lässt sich vollständig rückgängig machen.
 
-Getestet mit CAMT.053-Exporten von Erste Bank / George Business (Österreich). Andere Banken, die camt.053.001.02 exportieren, sollten ebenfalls funktionieren.
+Liest **CAMT.053**-XML und den **George-JSON-Export** (Erste Bank / George Business, Österreich). Buchungen, die in beiden Formaten vorkommen, werden nur einmal importiert. Andere Banken, die camt.053.001.02 exportieren, sollten ebenfalls funktionieren.
 
 Benötigt wird nur die Python-3-Standardbibliothek.
 
@@ -48,6 +48,16 @@ chmod 600 .env
 
 Im nächsten Monat sind Auswahl und Zuordnung vorausgefüllt. Sie entscheiden nur noch über neue Buchungen und neue Gegenparteien. Bereits importierte Buchungen werden automatisch übersprungen.
 
+## Weitere Funktionen
+
+- **Bereits bezahlte Rechnungen:** Ist eine Rechnung in Invoice Ninja schon als bezahlt markiert, verknüpft `--match` die Bankbuchung mit der vorhandenen Zahlung und setzt das Zahlungsdatum auf das Bankdatum, statt eine zweite Zahlung anzulegen.
+- **PayPal:** Legen Sie PayPal-Aktivitätsexporte (CSV) in einen Ordner `PAYPAL/`. Bankbuchungen wie `1234567890123/PAYPAL` erhalten dann den echten Händler (z. B. „Example Music AS (PayPal)“). `./make_review.py --paypal <ordner>` erzeugt eine Auswahlseite nur mit den PayPal-Buchungen.
+- **Sonderfälle** in `overrides.json` (lokal, nicht im Git), Schlüssel `bankref|CRDT/DBIT|betrag`:
+  - `{"action": "passthrough", "note": "..."}`: weder Rechnung noch Ausgabe, z. B. ein Durchlaufposten.
+  - `{"action": "link_payment", "payment": "2026/000123"}`: mit dieser vorhandenen Zahlung verknüpfen.
+  - `{"action": "replace_payment", "payment": "...", "invoice": "..."}`: eine Zahlung mit falschem Betrag durch den Bankbetrag ersetzen.
+  - `{"action": "expense", "vendor": "...", "category": "...", "vat": "rc"}`: diese eine Buchung als Ausgabe.
+
 ## Weitere Optionen
 
 | Option | Wirkung |
@@ -55,6 +65,7 @@ Im nächsten Monat sind Auswahl und Zuordnung vorausgefüllt. Sie entscheiden nu
 | `--limit N` | nur die ersten N Buchungen importieren (Testlauf) |
 | `--credits-only` / `--debits-only` | nur eingehende bzw. nur ausgehende Buchungen |
 | `--since JJJJ-MM-TT` | ältere Buchungen ignorieren |
+| `--overrides DATEI` | Sonderfälle (Standard `overrides.json`) |
 
 ## USt-Codes in der Zuordnung
 

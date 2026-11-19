@@ -13,3 +13,8 @@ expense_map*.json
 # misc
 .DS_Store
 __pycache__/
+overrides*.json
+PAYPAL/
+*.csv
+*.CSV
+review_paypal.html

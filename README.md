@@ -10,7 +10,7 @@ Import your bank transactions into [Invoice Ninja](https://invoiceninja.com) (v5
 - **VAT handling:** presets follow Austrian rules (20 / 13 / 10 %, exempt, reverse charge, foreign VAT, no input VAT for passenger cars), with the default picked from the counterparty's country.
 - **Safe test imports:** every run is logged and can be fully rolled back.
 
-Tested with Erste Bank / George Business (Austria) CAMT.053 exports. Other banks that export camt.053.001.02 should work too.
+Reads **CAMT.053** XML and the **George JSON export** (Erste Bank / George Business, Austria). Bookings that appear in both formats are imported only once. Other banks that export camt.053.001.02 should work too.
 
 Only the Python 3 standard library is needed.
 
@@ -48,6 +48,16 @@ chmod 600 .env
 
 Your previous selection and mapping are pre-filled next month, so only new bookings and counterparties need a decision. Already imported bookings are skipped automatically.
 
+## More features
+
+- **Already-paid invoices:** if an invoice is already marked paid in Invoice Ninja, `--match` links the bank booking to that existing payment and sets the payment date to the bank date, instead of creating a second payment.
+- **PayPal:** put PayPal activity CSV exports into a `PAYPAL/` folder. Bank bookings like `1234567890123/PAYPAL` then get the real merchant (e.g. "Example Music AS (PayPal)"). `./make_review.py --paypal <folder>` builds a selection page with only the PayPal bookings.
+- **Special cases** in `overrides.json` (local, not in git), keyed by `bankref|CRDT/DBIT|amount`:
+  - `{"action": "passthrough", "note": "..."}`: no invoice and no expense, for example a pass-through item.
+  - `{"action": "link_payment", "payment": "2026/000123"}`: link to this existing payment.
+  - `{"action": "replace_payment", "payment": "...", "invoice": "..."}`: replace a payment that has the wrong amount by the bank amount.
+  - `{"action": "expense", "vendor": "...", "category": "...", "vat": "rc"}`: this one booking as an expense.
+
 ## Other options
 
 | Option | Effect |
@@ -55,6 +65,7 @@ Your previous selection and mapping are pre-filled next month, so only new booki
 | `--limit N` | import only the first N bookings (test run) |
 | `--credits-only` / `--debits-only` | only incoming / outgoing bookings |
 | `--since YYYY-MM-DD` | ignore older bookings |
+| `--overrides FILE` | special cases (default `overrides.json`) |
 
 ## VAT codes in the mapping
 

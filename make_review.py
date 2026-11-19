@@ -30,8 +30,14 @@ party_of = c.party_of  # shared with the importer
 
 
 def main():
-    paths = sys.argv[1:] or [str(p) for p in HERE.iterdir() if p.name.endswith("camt") or p.suffix == ".xml"]
+    args = sys.argv[1:]
+    paypal_only = "--paypal" in args  # page with only the PayPal bookings, decided per merchant
+    args = [a for a in args if a != "--paypal"]
+    paths = args or [str(p) for p in HERE.iterdir() if p.name.endswith("camt") or p.suffix in (".xml", ".json")
+                                   and p.name[:2].isalpha() and p.name[2:4].isdigit()]
     txs = c.collect(paths)
+    if paypal_only:
+        txs = [t for t in txs if c.PAYPAL_RE.match(t["description"])]
     prev = HERE / "ninja_selection.json"
     prev = json.loads(prev.read_text()) if prev.exists() else {}
     prev_refs = prev.get("decisions", {})
@@ -40,7 +46,9 @@ def main():
     rows = []
     for t in txs:
         p = party_of(t)
-        if t["ref"] in prev_refs:
+        if paypal_only and p not in prev_party:
+            biz, why = False, "PayPal: " + (t["description"].split(" · ")[2] if t["description"].count(" · ") > 1 else "")
+        elif t["ref"] in prev_refs:
             biz, why = prev_refs[t["ref"]], "saved"
         elif p in prev_party:
             biz, why = prev_party[p], "counterparty rule"
@@ -51,9 +59,10 @@ def main():
         rows.append({**t, "party": p, "biz": biz, "why": why})
 
     period = f"{rows[0]['date']} – {rows[-1]['date']}" if rows else ""
-    page = TEMPLATE.replace("__DATA__", json.dumps(rows, ensure_ascii=False).replace("</", "<\\/")) \
+    page = TEMPLATE.replace("__PREV__", json.dumps(prev, ensure_ascii=False).replace("</", "<\\/")) \
+                   .replace("__DATA__", json.dumps(rows, ensure_ascii=False).replace("</", "<\\/")) \
                    .replace("__PERIOD__", html.escape(period))
-    out = HERE / "review.html"
+    out = HERE / ("review_paypal.html" if paypal_only else "review.html")
     out.write_text(page, encoding="utf-8")
     print(f"{len(rows)} bookings ({period}) -> {out}")
     print(f"pre-ticked as business: {sum(r['biz'] for r in rows)}")
@@ -108,6 +117,7 @@ input[type=checkbox]{width:16px;height:16px;accent-color:var(--acc);cursor:point
 <div class="toast" id="toast"></div>
 <script>
 const DATA=__DATA__;
+const PREV=__PREV__;  // earlier decisions (other periods) are kept when saving
 const KEY='ninja-review:'+DATA.length+':'+(DATA[0]||{}).date;
 try{const s=JSON.parse(localStorage.getItem(KEY)||'null');if(s)DATA.forEach(r=>{if(r.ref in s)r.biz=s[r.ref]})}catch(e){}
 const persist=()=>{try{localStorage.setItem(KEY,JSON.stringify(Object.fromEntries(DATA.map(r=>[r.ref,r.biz]))))}catch(e){}};
@@ -147,7 +157,7 @@ for(const id of['ty','st'])document.getElementById(id).addEventListener('click',
 document.getElementById('save').addEventListener('click',()=>{
  const parties={};const pg={};DATA.forEach(r=>{(pg[r.party]=pg[r.party]||[]).push(r.biz)});
  for(const[p,v]of Object.entries(pg)){if(v.every(x=>x))parties[p]=true;else if(v.every(x=>!x))parties[p]=false}
- const out={created:new Date().toISOString(),decisions:Object.fromEntries(DATA.map(r=>[r.ref,r.biz])),parties};
+ const out={created:new Date().toISOString(),decisions:{...(PREV.decisions||{}),...Object.fromEntries(DATA.map(r=>[r.ref,r.biz]))},parties:{...(PREV.parties||{}),...parties}};
  const a=document.createElement('a');a.href=URL.createObjectURL(new Blob([JSON.stringify(out,null,1)],{type:'application/json'}));
  a.download='ninja_selection.json';a.click();
  const t=document.getElementById('toast');t.textContent='Saved ninja_selection.json to Downloads — move it into the Ninja folder';t.style.display='block';setTimeout(()=>t.style.display='none',4000);

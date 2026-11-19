@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Import Erste/George Business CAMT.053 statements into Invoice Ninja bank transactions.
+"""Import Erste/George Business bank statements (CAMT.053 XML or George JSON export) into Invoice Ninja.
 
 Usage:
   ./camt2ninja.py FILE_OR_DIR [...]              # dry run: parse + show what would be imported
@@ -145,17 +145,121 @@ def ninja_participant(t):
     return "Erste Bank"
 
 
-def collect(paths):
+def parse_george_json(path):
+    """George (Erste Bank) JSON export: list of bookings. Same output as parse_camt."""
+    m = re.match(r"([A-Z]{2}\d{2}[A-Z0-9]{8,30})_", Path(path).name)
+    own = m.group(1) if m else ""
+    for r in json.loads(Path(path).read_text(encoding="utf-8")):
+        a = r.get("amount") or {}
+        if r.get("booking") is None or not a.get("value"):
+            continue
+        val = a["value"] / 10 ** a.get("precision", 2)
+        ind = "CRDT" if val > 0 else "DBIT"
+        amt = abs(val)
+        text = " ".join(" ".join(p.split()) for p in [r.get("receiverReference"), r.get("reference")] if p)
+        name = (r.get("partnerName") or "").strip()
+        if CARD_RE.search(text):
+            name = ""  # card payment: merchant comes from the text, same as in CAMT
+        cp_iban = ((r.get("partnerAccount") or {}).get("iban") or "").replace(" ", "")
+        e2e = r.get("e2eReference") or ""
+        key_desc = " | ".join(p for p in [name, text, e2e and f"E2E {e2e}"] if p)
+        bank_ref = r.get("referenceNumber") or "h:" + hashlib.sha1(
+            f"{own}|{r['booking']}|{val}|{text}".encode()).hexdigest()[:20]
+        yield {
+            "ref": f"{bank_ref}|{ind}|{amt:.2f}|j" + hashlib.sha1(key_desc.encode()).hexdigest()[:8],
+            "iban": own or (r.get("ownerAccountNumber") or ""),
+            "currency": a.get("currency") or "EUR",
+            "date": r["booking"][:10],
+            "amount": f"{amt:.2f}",
+            "base_type": "CREDIT" if ind == "CRDT" else "DEBIT",
+            "participant": cp_iban,
+            "participant_name": name,
+            "description": text[:500] or name or "(no text)",
+        }
+
+
+def load_paypal(folder=None):
+    """PayPal activity CSV exports (folder PAYPAL/ or IN_PAYPAL_DIR): bank reference -> (merchant, item).
+    The bank only shows "<13 digit ref>/PAYPAL"; PayPal's 'Bankgutschrift auf PayPal-Konto' row carries the
+    same number as 'Bankreferenz' and points to the real payment via 'Zugehöriger Transaktionscode'."""
+    import csv
+    folder = Path(folder or os.environ.get("IN_PAYPAL_DIR") or HERE / "PAYPAL")
+    if not folder.is_dir():
+        return {}
+    rows = []
+    for f in sorted(folder.iterdir()):
+        if f.suffix.lower() == ".csv":
+            with open(f, encoding="utf-8-sig", newline="") as fh:
+                rows += [r for r in csv.DictReader(fh) if "Bankreferenz" in r]
+    by_tx = {r["Transaktionscode"]: r for r in rows}
+    out = {}
+    for r in rows:
+        if r.get("Bankreferenz"):
+            rel = by_tx.get(r.get("Zugehöriger Transaktionscode") or "")
+            name = (rel or {}).get("Name", "").strip() or "PayPal Ausgleich"
+            item = (rel or {}).get("Artikelbezeichnung", "").strip()
+            out.setdefault(r["Bankreferenz"], (name, item))
+    return out
+
+
+PAYPAL_RE = re.compile(r"^(\d{10,16})/PAYPAL\b")
+
+
+def resolve_paypal(txs):
+    """replace the PayPal counterparty by the real merchant from the PayPal export (key/ref unchanged)"""
+    pp = load_paypal()
+    if not pp:
+        return 0
+    n = 0
+    for t in txs:
+        m = PAYPAL_RE.match(t["description"])
+        if m and m.group(1) in pp:
+            name, item = pp[m.group(1)]
+            t["participant_name"] = name if name == "PayPal Ausgleich" else f"{name} (PayPal)"
+            t["description"] = " · ".join(p for p in [t["description"], name, item] if p)[:500]
+            n += 1
+    return n
+
+
+def base_ref(ref):
+    """bank reference + direction + amount: identical for the same booking in CAMT and JSON"""
+    return "|".join(ref.split("|")[:3])
+
+
+def collect(paths, state=None):
     files = []
     for p in map(Path, paths):
-        files += sorted(p.rglob("*.xml")) if p.is_dir() else [p]
+        files += sorted([*p.rglob("*.xml"), *p.rglob("*.json")]) if p.is_dir() else [p]
     seen, out = set(), []
     for f in files:
-        for t in parse_camt(f):
+        parse = parse_george_json if f.suffix.lower() == ".json" else parse_camt
+        for t in parse(f):
             if t["ref"] not in seen:  # overlapping statements
                 seen.add(t["ref"])
                 out.append(t)
-    return sorted(out, key=lambda t: (t["date"], t["ref"]))
+    # the same booking from another format (CAMT vs JSON) has another text hash:
+    # drop it when that booking is already known under a different ref (in this run or imported)
+    if state is None:  # imported bookings + bookings already decided in the review (business or private)
+        state = set(json.loads(STATE.read_text())) if STATE.exists() else set()
+        sel = HERE / "ninja_selection.json"
+        if sel.exists():
+            state |= set(json.loads(sel.read_text()).get("decisions", {}))
+    known = collections.defaultdict(set)
+    for ref in [*state, *(t["ref"] for t in out if "|j" not in t["ref"])]:
+        known[base_ref(ref)].add(ref)
+    slots = {b: len(refs) for b, refs in known.items()}
+    for t in out:  # rows that are themselves known use up their own slot
+        if t["ref"] in known.get(base_ref(t["ref"]), ()):
+            slots[base_ref(t["ref"])] -= 1
+    keep = []
+    for t in out:
+        b = base_ref(t["ref"])
+        if "|j" in t["ref"] and t["ref"] not in known.get(b, ()) and slots.get(b, 0) > 0:
+            slots[b] -= 1  # duplicate of a CAMT / already imported booking
+            continue
+        keep.append(t)
+    resolve_paypal(keep)
+    return sorted(keep, key=lambda t: (t["date"], t["ref"]))
 
 
 # ---------------------------------------------------------------- Invoice Ninja API
@@ -265,15 +369,19 @@ class Matcher:
     (sent/partial) and the open balances must add up to the booked amount to the cent."""
 
     def __init__(self, api):
+        self.api = api
         self.open = {}
         for i in api.all("invoices"):
             if not i.get("is_deleted") and int(i.get("status_id") or 0) in (2, 3) and float(i.get("balance") or 0) > 0:
                 self.open[norm_invoice_no(i["number"])] = i
         self.used = set()
+        self.load_paid()
 
     def find(self, t):
         if t["base_type"] != "CREDIT":
             return None, "outgoing"
+        if override(t):
+            return None, f"override: {override(t)['action']}"
         refs = invoice_refs(t)
         if not refs:
             return None, "no invoice number in reference"
@@ -290,8 +398,55 @@ class Matcher:
     def take(self, invs):
         self.used.update(i["id"] for i in invs)
 
+    def load_paid(self):
+        """invoices already marked paid in Invoice Ninja whose payment is not linked to a bank booking yet"""
+        self.inv_all = {norm_invoice_no(i["number"]): i for i in self.api.all("invoices") if not i.get("is_deleted")}
+        self.free_pay = collections.defaultdict(list)
+        for p in self.api.all("payments?include=paymentables"):
+            if p.get("is_deleted") or p.get("transaction_id"):
+                continue
+            for x in p.get("paymentables") or []:
+                self.free_pay[x.get("invoice_id")].append(p)
+            self.free_pay[("number", p["number"])].append(p)
+
+    def find_paid(self, t):
+        """-> (payment, reason): the one existing unlinked payment for the referenced invoice(s), same amount"""
+        if t["base_type"] != "CREDIT":
+            return None, "outgoing"
+        o = override(t)
+        if o:
+            if o["action"] == "replace_payment":
+                return None, f"replace payment {o['payment']} by {t['amount']} on invoice {o['invoice']}"
+            if o["action"] != "link_payment":
+                return None, f"{o['action']}: {o.get('note', '')}"
+            ps = self.free_pay.get(("number", o["payment"]))
+            return (ps[0], "override") if ps else (None, f"override: payment {o['payment']} not found or already linked")
+        refs = invoice_refs(t)
+        invs = [self.inv_all.get(r) for r in refs]
+        if not refs or None in invs:
+            return None, "no invoice"
+        pays = {p["id"]: p for i in invs for p in self.free_pay.get(i["id"], [])}
+        cand = [p for p in pays.values() if abs(float(p["amount"]) - float(t["amount"])) <= 0.005
+                and p["id"] not in self.used]
+        if len(cand) != 1:
+            got = ", ".join(f"{p['number']} {float(p['amount']):.2f}" for p in pays.values()) or "none"
+            return None, f"invoice {', '.join(i['number'] for i in invs)} already paid; unlinked payments: {got}"
+        return cand[0], "ok"
+
 
 RUNS = HERE / "runs"
+# overrides.json (local, not in git): special cases per booking, keyed by "bankref|CRDT/DBIT|amount"
+#   {"action": "passthrough", "note": "..."}               no invoice / no expense, note added to the text
+#   {"action": "link_payment", "payment": "2026/000123"}   link to this existing payment (amount may differ)
+#   {"action": "expense", "vendor": "...", "category": "...", "vat": "rc", "note": "..."}
+#   {"action": "replace_payment", "payment": "2026/000123", "invoice": "2026/000456"}
+#       existing payment has the wrong amount: delete it, pay the invoice with the bank amount instead
+#       (rollback re-creates the old payment; Invoice Ninja cannot restore deleted payments)
+OVERRIDES = {}
+
+
+def override(t):
+    return OVERRIDES.get(base_ref(t["ref"]))
 STATUS = {1: "unmatched", 2: "matched", 3: "converted"}
 
 
@@ -337,6 +492,9 @@ class ExpenseMapper:
         }
 
     def rule(self, t):
+        o = override(t)
+        if o:
+            return o if o["action"] == "expense" else {"action": "skip", "vendor": "", "category": o["action"]}
         return self.map.get(party_of(t))
 
     def plan_links(self, items):
@@ -392,7 +550,7 @@ class ExpenseMapper:
                 e = self.api.req("GET", f"expenses/{res['expense_id']}")["data"]
                 e.update(uses_inclusive_taxes=True, calculate_tax_by_amount=False,
                          tax_name1=self.tax_name.get(code, ""), tax_rate1=rate,
-                         private_notes=" · ".join(p for p in [note, f"Land: {booking_country(t)}",
+                         private_notes=" · ".join(p for p in [obj.get("note"), note, f"Land: {booking_country(t)}",
                                                               e.get("private_notes")] if p))
                 self.api.req("PUT", f"expenses/{res['expense_id']}", e)
                 res["vat"] = code
@@ -419,12 +577,13 @@ def rollback(run, commit):
         ours = (c.get("payment_id") and x.get("payment_id") == c["payment_id"]) or \
                (c.get("expense_id") and c["expense_id"] in (x.get("expense_id") or ""))
         (ok if st in (1, 2) or ours else linked).append((c, x, st))
-    pays = [c for c, _, _ in ok if c.get("payment_id")]
+    pays = [c for c, _, _ in ok if c.get("payment_id") and not c.get("payment_linked")]
+    pay_link = [c for c, _, _ in ok if c.get("payment_linked")]
     exp_new = [c for c, _, _ in ok if c.get("expense_created")]
     exp_link = [c for c, _, _ in ok if c.get("expense_linked")]
     print(f"run {f.stem}: {len(d['created'])} created -> delete {len(ok)} transactions, "
           f"{len(pays)} payments (invoices reopen), {len(exp_new)} expenses; "
-          f"unlink {len(exp_link)} pre-existing expenses (kept); "
+          f"unlink {len(exp_link)} pre-existing expenses and {len(pay_link)} pre-existing payments (kept, old date restored); "
           f"{len(d.get('created_vendors', []))} vendors, {len(d.get('created_categories', []))} categories created by the run")
     for c, x, st in linked:
         print(f"  KEEP {x['date']} {x['amount']:>10} {STATUS.get(st, st)}  {x['description'][:70]}")
@@ -439,11 +598,22 @@ def rollback(run, commit):
             api.req("POST", f"{path}/bulk", {"action": action, "ids": ids[k:k + 100]})
 
     bulk("payments", "delete", [c["payment_id"] for c in pays])
+    for c in pays:  # payment replaced by this run: re-create it (deleted payments cannot be restored)
+        rp = c.get("replaced_payment")
+        if rp:
+            body = {k: rp[k] for k in ("client_id", "amount", "date", "type_id", "transaction_reference") if rp.get(k)}
+            body.update(invoices=rp["invoices"],
+                        private_notes=" · ".join(p for p in [rp.get("private_notes"), f"ersetzt {rp['number']} (Rollback)"] if p))
+            r = api.req("POST", "payments", body)["data"]
+            print(f"  re-created payment {rp['number']} as {r['number']}")
     bulk("expenses", "delete", [e for c in exp_new for e in (c.get("expense_id") or "").split(",") if e])
     for c in exp_link:  # pre-existing expense: only detach it from the transaction
         e = api.req("GET", f"expenses/{c['expense_id']}")["data"]
         e["transaction_id"] = ""
         api.req("PUT", f"expenses/{c['expense_id']}", e)
+    for c in pay_link:  # pre-existing payment: restore its date; deleting the transaction detaches it
+        if c.get("payment_old_date"):
+            api.req("PUT", f"payments/{c['payment_id']}", {"date": c["payment_old_date"]})
     bulk("bank_transactions", "delete", [c["id"] for c, _, _ in ok])
     if not linked:
         bulk("vendors", "delete", d.get("created_vendors", []))
@@ -471,6 +641,7 @@ def main():
     ap.add_argument("--expenses", metavar="MAP",
                     help="expense_map.json from expenses.html: turn outgoing bookings into expenses")
     ap.add_argument("--debits-only", action="store_true")
+    ap.add_argument("--overrides", metavar="FILE", help="special cases per booking (default: overrides.json if present)")
     ap.add_argument("--runs", action="store_true", help="list logged import runs")
     ap.add_argument("--rollback", metavar="RUN", help="delete everything a run created ('last' or run id); add --commit")
     a = ap.parse_args()
@@ -483,13 +654,21 @@ def main():
     if not a.paths:
         ap.error("give CAMT file(s) or folder")
 
+    ov_file = Path(a.overrides) if a.overrides else HERE / "overrides.json"
+    if ov_file.exists():
+        OVERRIDES.update({k: v for k, v in json.loads(ov_file.read_text()).items() if not k.startswith("_")})
     txs = collect(a.paths)
+    for t in txs:
+        o = override(t)
+        if o and o.get("note"):
+            t["description"] = f"{t['description']} [{o['note']}]"[:500]
+    forced = {t["ref"] for t in txs if override(t)}
     if a.only:
         dec = json.loads(Path(a.only).read_text())["decisions"]
         undecided = [t for t in txs if t["ref"] not in dec]
         if undecided:
             print(f"warning: {len(undecided)} bookings not in {a.only} (not reviewed) -> skipped; re-run make_review.py")
-        txs = [t for t in txs if dec.get(t["ref"]) is True]
+        txs = [t for t in txs if dec.get(t["ref"]) is True or t["ref"] in forced]
     if a.credits_only:
         txs = [t for t in txs if t["base_type"] == "CREDIT"]
     if a.debits_only:
@@ -519,16 +698,26 @@ def main():
     if a.match:
         matcher = Matcher(api)
         plan, why = [], {}
+        links = []
         for t in new:
             invs, reason = matcher.find(t)
             if invs:
                 matcher.take(invs)
                 plan.append((t, invs))
             elif t["base_type"] == "CREDIT":
-                why[t["ref"]] = reason
-        print(f"\nmatch: {len(plan)} of {sum(t['base_type'] == 'CREDIT' for t in new)} incoming payments -> invoice")
+                pay, r2 = matcher.find_paid(t)
+                if pay:
+                    matcher.used.add(pay["id"])
+                    links.append((t, pay))
+                else:
+                    why[t["ref"]] = reason if r2 == "no invoice" else r2
+        print(f"\nmatch: {len(plan)} of {sum(t['base_type'] == 'CREDIT' for t in new)} incoming payments -> open invoice, "
+              f"{len(links)} -> existing payment (invoice already paid)")
         for t, invs in plan:
             print(f"  {t['date']} +{t['amount']:>9} {ninja_participant(t)[:26]:26} -> {', '.join(i['number'] for i in invs)}")
+        for t, pay in links:
+            print(f"  {t['date']} +{t['amount']:>9} {ninja_participant(t)[:26]:26} -> link payment {pay['number']}"
+                  + (f" (date {pay['date']} -> {t['date']})" if pay["date"] != t["date"] else ""))
         for t in new:
             if t["ref"] in why:
                 print(f"  {t['date']} +{t['amount']:>9} {ninja_participant(t)[:26]:26}    stays unmatched: {why[t['ref']]}")
@@ -610,7 +799,25 @@ def main():
                 log["created"].append(entry)
                 save_log()
                 ok += 1
-                if matcher:
+                o = override(t)
+                if matcher and o and o["action"] == "replace_payment":
+                    old = next(p for p in api.all("payments?include=paymentables")
+                               if p["number"] == o["payment"] and not p.get("is_deleted"))
+                    inv = api.req("GET", f"invoices?number={o['invoice']}")["data"][0]
+                    entry["replaced_payment"] = {k: old.get(k) for k in (
+                        "number", "client_id", "amount", "date", "type_id", "transaction_reference", "private_notes")}
+                    entry["replaced_payment"]["invoices"] = [{"invoice_id": x["invoice_id"], "amount": x["amount"]}
+                                                             for x in old.get("paymentables") or []]
+                    save_log()
+                    api.req("POST", "payments/bulk", {"action": "delete", "ids": [old["id"]]})
+                    api.req("POST", "bank_transactions/match", {"transactions": [
+                        {"id": entry["id"], "invoice_ids": inv["id"]}]})
+                    x = api.req("GET", f"bank_transactions/{entry['id']}")["data"]
+                    entry.update(payment_id=x.get("payment_id"), invoice_numbers=[inv["number"]])
+                    save_log()
+                    matched += 1
+                    print(f"  replaced payment {o['payment']} -> {t['amount']} on {inv['number']}")
+                elif matcher:
                     invs, _ = matcher.find(t)
                     if invs:
                         api.req("POST", "bank_transactions/match", {"transactions": [
@@ -622,6 +829,19 @@ def main():
                         matched += 1
                         print(f"  matched {t['date']} +{t['amount']} -> {', '.join(entry['invoice_numbers'])}"
                               f" (payment {entry['payment_id']}, status {STATUS.get(int(x.get('status_id') or 0))})")
+                    else:
+                        pay, _ = matcher.find_paid(t)
+                        if pay:
+                            api.req("POST", "bank_transactions/match", {"transactions": [
+                                {"id": entry["id"], "payment_id": pay["id"]}]})
+                            matcher.used.add(pay["id"])
+                            entry.update(payment_id=pay["id"], payment_linked=True, payment_number=pay["number"],
+                                         payment_old_date=pay["date"])
+                            if pay["date"] != t["date"]:
+                                api.req("PUT", f"payments/{pay['id']}", {"date": t["date"]})
+                            save_log()
+                            matched += 1
+                            print(f"  linked {t['date']} +{t['amount']} -> existing payment {pay['number']}")
                 if expm:
                     res = expm.apply(entry["id"], t)
                     if res:
