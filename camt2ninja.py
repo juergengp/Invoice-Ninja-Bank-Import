@@ -681,8 +681,10 @@ def run_existing(api, items, expm, commit, label):
     (and refresh text/counterparty, e.g. PayPal merchant). Rollback unlinks instead of deleting."""
     ids = {}
     for f in sorted(RUNS.glob("*.json")) if RUNS.exists() else []:
-        for e in json.loads(f.read_text()).get("created", []):
-            ids[e["ref"]] = e["id"]
+        d = json.loads(f.read_text())
+        for e in (d.get("created", []) if isinstance(d, dict) else []):
+            if isinstance(e, dict) and "ref" in e and "id" in e:
+                ids[e["ref"]] = e["id"]
     todo = []
     for t in items:
         if t["ref"] not in ids:
