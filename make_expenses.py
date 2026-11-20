@@ -6,6 +6,9 @@ vendor + expense category (or "no expense"). Save -> expense_map.json, then:
   ./camt2ninja.py <camt dir> --only ninja_selection.json --match --expenses expense_map.json --commit
 
 Existing expense_map.json is pre-filled, so next month only new counterparties need a decision.
+
+  ./make_expenses.py --learn      # build suggestions.json from your own Invoice Ninja vendors and expense_map.json
+                                  # (stays local, never committed)
 """
 import collections
 import html
@@ -21,14 +24,28 @@ c = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(c)
 
 # suggestion table: substring of counterparty (upper case) -> (vendor, category, action)
+# Only generic entries here; your own vendors go into suggestions.json (local, not in git):
+#   {"suggest": [["HOSTER", "Hoster GmbH", "Domains & Hosting", "expense"]],
+#    "vendor_vat": {"Hoster GmbH": "20"}}
 SUGGEST = [
     ("WP-KAUF", "Erste Bank", "Wertpapiere", "skip"),
     ("WERTPAPIER-SPARPLAN", "Erste Bank", "Wertpapiere", "skip"),
     ("DEPOTENTG", "Erste Bank", "Wertpapiere", "skip"),
+    ("INVESTMENT PLAN", "Erste Bank", "Wertpapiere", "skip"),
+    ("KEST", "Erste Bank", "Wertpapiere", "skip"),
     ("SOLLZINSEN", "Erste Bank", "Bankspesen", "expense"),
     ("KONTOFÜHRUNG", "Erste Bank", "Bankspesen", "expense"),
+    ("BEREITSTELLUNGSPROVISION", "Erste Bank", "Bankspesen", "expense"),
+    ("BUCHUNGSKOSTENBEITRAG", "Erste Bank", "Bankspesen", "expense"),
     ("SOZIALVERSICHERUNG", "SVS", "SVA", "expense"),
 ]
+VENDOR_VAT = {}  # known exceptions to the country rule
+
+LOCAL = HERE / "suggestions.json"
+if LOCAL.exists():
+    _local = json.loads(LOCAL.read_text())
+    SUGGEST = [tuple(s) for s in _local.get("suggest", [])] + SUGGEST  # local entries win
+    VENDOR_VAT.update(_local.get("vendor_vat", {}))
 
 
 def suggest(party):
@@ -43,7 +60,6 @@ def suggest(party):
 
 CAT_VAT = {"Versicherungen": "0", "Bankspesen": "0", "SVA": "0", "Wertpapiere": "0", "Gebühren": "0",
            "KFZ": "nodeduct", "Tanken": "nodeduct"}
-VENDOR_VAT = {}  # known exceptions to the country rule
 
 
 def vat_default(m, country, pos=False):
@@ -62,7 +78,67 @@ def vat_default(m, country, pos=False):
     return "rc", f"service from {country} (non-EU)"
 
 
+LEGAL = re.compile(r"\s*\((PayPal|SumUp)\)$|\s+(GmbH|AG|KG|OG|e\.U\.|Ltd\.?|Inc\.?|LLC|S\.?A\.?|B\.?V\.?)$", re.I)
+
+
+def vat_code(e):
+    """VAT code of an existing Invoice Ninja expense (rate, or the note camt2ninja wrote)"""
+    rate = float(e.get("tax_rate1") or 0)
+    if rate:
+        return str(int(rate)) if rate in (20, 13, 10) else None
+    notes = e.get("private_notes") or ""
+    for code, (_, _, note) in c.VAT.items():
+        if note and note in notes:
+            return code
+    return None
+
+
+def learn():
+    """Build suggestions.json from YOUR data: your Invoice Ninja expenses and your expense_map.json.
+    Everything stays on this machine; only your own Invoice Ninja instance is read."""
+    learned = {}  # key -> [key, vendor, category, action], vendor -> vat
+    vat = {}
+    prev_f = HERE / "expense_map.json"
+    for party, m in (json.loads(prev_f.read_text()) if prev_f.exists() else {}).items():
+        key = LEGAL.sub("", party).upper().strip()
+        if len(key) >= 3 and m.get("vendor"):
+            learned[key] = [key, m["vendor"], m.get("category", "Sonstiges"), m.get("action", "expense")]
+            if m.get("vat"):
+                vat[m["vendor"]] = m["vat"]
+    try:
+        c.load_env()
+        api = c.api_from_env()
+        vname = {v["id"]: v["name"] for v in api.all("vendors") if not v.get("is_deleted")}
+        cname = {x["id"]: x["name"] for x in api.all("expense_categories") if not x.get("is_deleted")}
+        per = collections.defaultdict(lambda: (collections.Counter(), collections.Counter()))
+        for e in api.all("expenses"):
+            if e.get("is_deleted") or e.get("vendor_id") not in vname:
+                continue
+            cats, vats = per[vname[e["vendor_id"]]]
+            if e.get("category_id") in cname:
+                cats[cname[e["category_id"]]] += 1
+            code = vat_code(e)
+            if code:
+                vats[code] += 1
+        for vendor, (cats, vats) in per.items():
+            key = LEGAL.sub("", vendor).upper().strip()
+            if len(key) >= 3 and cats and key not in learned:
+                learned[key] = [key, vendor, cats.most_common(1)[0][0], "expense"]
+            if vats and vendor not in vat:
+                vat[vendor] = vats.most_common(1)[0][0]
+    except SystemExit as e:
+        print(f"Invoice Ninja not read ({e}); using expense_map.json only")
+    old = json.loads(LOCAL.read_text()) if LOCAL.exists() else {}
+    keys = set(learned)
+    merged = {"suggest": [s for s in old.get("suggest", []) if s[0] not in keys] + sorted(learned.values()),
+              "vendor_vat": {**old.get("vendor_vat", {}), **vat}}
+    LOCAL.write_text(json.dumps(merged, ensure_ascii=False, indent=1))
+    print(f"{len(learned)} vendors learned, {len(merged['suggest'])} suggestions -> {LOCAL}")
+
+
 def main():
+    if "--learn" in sys.argv:
+        return learn()
     paths = sys.argv[1:] or [str(p) for p in HERE.iterdir() if p.name.endswith("camt") or p.suffix == ".xml"]
     sel = json.loads((HERE / "ninja_selection.json").read_text())["decisions"]
     debits = [t for t in c.collect(paths) if sel.get(t["ref"]) and t["base_type"] == "DEBIT"]

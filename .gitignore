@@ -19,3 +19,6 @@ PAYPAL/
 *.CSV
 review_paypal.html
 review_*.html
+
+# your own vendor suggestions (built by make_expenses.py --learn)
+suggestions*.json

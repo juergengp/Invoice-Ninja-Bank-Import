@@ -34,6 +34,7 @@ chmod 600 .env
    ./make_expenses.py <camt-ordner>      # erzeugt expenses.html
    ```
    **Save mapping** klicken und `expense_map.json` in diesen Ordner verschieben.
+   Optional: `./make_expenses.py --learn` erzeugt Ihre eigenen Lieferanten-Vorschläge (`suggestions.json`). Grundlage sind die Lieferanten, Kategorien und USt Ihrer Ausgaben in Invoice Ninja sowie `expense_map.json`. Neue Gegenparteien desselben Lieferanten sind dann vorausgefüllt. Die Datei bleibt lokal und wird nicht ins Git übernommen. Ohne sie werden nur einige allgemeine Bank-Einträge vorgeschlagen.
 4. **Vorschau, dann Import:**
    ```sh
    ./camt2ninja.py <camt-ordner> --only ninja_selection.json --match --expenses expense_map.json            # Probelauf
@@ -94,7 +95,7 @@ Diese Vorgaben sind Standardwerte und keine Steuerberatung. Bitte prüfen Sie si
 
 ## Datenschutz
 
-Kontoauszüge, Auswahl, Zuordnungen, Laufprotokolle und die erzeugten HTML-Seiten bleiben lokal und sind per `.gitignore` ausgeschlossen. Daten werden nur an Ihre eigene Invoice-Ninja-Instanz gesendet.
+Kontoauszüge, Auswahl, Zuordnungen, Lieferanten-Vorschläge, Laufprotokolle und die erzeugten HTML-Seiten bleiben lokal und sind per `.gitignore` ausgeschlossen. Daten werden nur an Ihre eigene Invoice-Ninja-Instanz gesendet.
 
 ## Hinweise
 

@@ -34,6 +34,7 @@ chmod 600 .env
    ./make_expenses.py <camt-folder>      # writes expenses.html
    ```
    Click **Save mapping** and move `expense_map.json` into this folder.
+   Optional: `./make_expenses.py --learn` builds your own vendor suggestions (`suggestions.json`) from the vendors, categories and VAT of your Invoice Ninja expenses and from `expense_map.json`. New counterparties of the same vendor are then pre-filled. The file stays local and is not committed. Out of the box only a few generic bank entries are suggested.
 4. **Preview, then import:**
    ```sh
    ./camt2ninja.py <camt-folder> --only ninja_selection.json --match --expenses expense_map.json            # dry run
@@ -94,7 +95,7 @@ These presets are defaults, not tax advice. Check them with your tax advisor.
 
 ## Privacy
 
-Bank statements, selections, mappings, run logs and the generated HTML pages stay local and are excluded by `.gitignore`. Nothing is sent anywhere except to your own Invoice Ninja instance.
+Bank statements, selections, mappings, vendor suggestions, run logs and the generated HTML pages stay local and are excluded by `.gitignore`. Nothing is sent anywhere except to your own Invoice Ninja instance.
 
 ## Notes
 
